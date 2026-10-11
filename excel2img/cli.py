@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from .exporter import process_workbook
+from .active import process_active_workbook
+from .locking import ActiveRunLock, AlreadyRunningError
 from .paths import EXCEL_SUFFIXES, is_eligible_workbook, iter_workbooks, load_directories
 from .renderer import (
     AutomationTimeout,
@@ -18,9 +21,15 @@ def _log(message: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {message}", flush=True)
 
 
+def _error(message: str) -> None:
+    print(f"[{datetime.now():%H:%M:%S}] {message}", file=sys.stderr, flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Export bordered Excel tables as PNG images.")
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--active", action="store_true", help="render Excel's active workbook")
+    mode.add_argument("--watch", action="store_true", help="watch configured directories")
     mode.add_argument("--once", action="store_true", help="process current workbooks and exit")
     mode.add_argument("--file", type=Path, help="process only one workbook and exit")
     mode.add_argument("--check", action="store_true", help="test the complete Excel rendering path")
@@ -28,6 +37,19 @@ def main(argv: list[str] | None = None) -> int:
         "--config", type=Path, default=Path("excelDirectoryList.json"), help=argparse.SUPPRESS
     )
     args = parser.parse_args(argv)
+
+    if args.active:
+        try:
+            with ActiveRunLock():
+                process_active_workbook(_log)
+        except AlreadyRunningError as exc:
+            _error(f"Skipped: {exc}.")
+            return 0
+        except Exception as exc:
+            _error(f"Failed: {exc}")
+            return 1
+        _log("Completed.")
+        return 0
 
     if args.check:
         try:
@@ -60,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             _log(f"Failed: {workbook.name}: {exc}")
             return 1
+        return 0
+
+    if not args.once and not args.watch:
+        parser.print_help()
         return 0
 
     try:

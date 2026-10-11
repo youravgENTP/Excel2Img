@@ -1,9 +1,10 @@
 # Excel2Img
 
-Excel2Img watches folders for saved `.xlsx` and `.xlsm` workbooks, finds tables
-enclosed by cell borders, and asks Microsoft Excel for Mac to render each table
-as a high-resolution PNG. It is a small, local command-line utility; it does not
-upload workbooks or execute workbook macros.
+Excel2Img renders bordered tables from the workbook currently being edited in
+Microsoft Excel for Mac as high-resolution PNGs. Rendering is triggered manually,
+so an ordinary Cmd+S only saves the workbook and never starts a conversion. It is
+a small, local command-line utility; it does not upload workbooks or execute
+workbook macros.
 
 ## Install (macOS)
 
@@ -17,17 +18,30 @@ pip install -r requirements.txt
 cp excelDirectoryList.example.json excelDirectoryList.json
 ```
 
-Edit `excelDirectoryList.json` and replace the example paths with the folders
-that contain your workbooks. `~`, spaces, Korean text, and multiple folders are
-supported. Missing folders produce a warning. Nested and duplicate paths are
-collapsed automatically.
+`excelDirectoryList.json` is needed only for the optional `--once` and `--watch`
+modes. Edit it and replace the example paths with the folders that contain your
+workbooks. `~`, spaces, Korean text, and multiple folders are supported.
 
 On the first render, macOS may ask Terminal (or your terminal application) for
 permission to control Microsoft Excel. Allow it in **System Settings → Privacy &
-Security → Automation**. Excel must be installed, but it does not have to be
-open before Excel2Img starts.
+Security → Automation**. Excel must be installed. The manual command requires
+Excel to be frontmost and a previously saved workbook to be active.
 
 ## Run
+
+Render only the active Excel workbook:
+
+```bash
+python main.py --active
+```
+
+Excel2Img confirms that Excel is frontmost without bringing it forward. If the
+workbook has changes, it performs a normal save of that workbook; it never uses
+Save As. An unchanged workbook is not saved again. A never-saved or read-only
+modified workbook produces an error without prompting, discarding changes, or
+processing another workbook. The saved file is allowed to settle before it is
+read. Concurrent `--active` invocations are safely coalesced: only the first
+runs, and the kernel releases the lock even if that process crashes.
 
 Check the complete Excel automation path first. If a workbook is already open,
 this copies its active cell directly without activating or navigating anything.
@@ -50,16 +64,35 @@ Process all existing eligible workbooks once:
 python main.py --once
 ```
 
-Then watch continuously (stop with Ctrl+C):
+Legacy automatic watching is available only when explicitly requested (stop
+with Ctrl+C):
 
 ```bash
-python main.py
+python main.py --watch
 ```
 
+Running `python main.py` without a mode prints help and does not start a watcher.
 Batch and watcher startup run the same preflight automatically. If Excel stops
 responding, a batch aborts instead of sending every remaining workbook to a
 broken automation session. Resolve any visible Excel dialog and run `--check`
 again; Excel2Img never force-quits Excel or closes the user's workbooks.
+
+## macOS keyboard shortcut
+
+Create a Quick Action in the Shortcuts app, add **Run Shell Script**, and use
+this exact script:
+
+```bash
+cd /Users/younyung.gene/Excel2Img
+./.venv/bin/python main.py --active
+```
+
+The command uses absolute project and interpreter paths, needs no activated
+virtual environment or interactive shell, writes failures to standard error,
+and does not open Terminal or another application window. Assign the desired
+keyboard shortcut in macOS. If using Cmd+Shift+N, remove or reassign Finder's
+existing shortcut in macOS settings so Finder does not intercept it; the CLI
+cannot override application keyboard shortcuts.
 
 For `Notes.xlsx`, images are written beside it in `Notes_Img/`, for example
 `Sheet1_01.png`. Files and worksheets whose names begin with `!`, Excel lock
@@ -75,8 +108,8 @@ cells. This preserves unbordered and blank cells inside an outlined table and
 keeps diagonally touching tables separate. A lone decorative line is not an
 enclosure and is ignored.
 
-For normal save-triggered rendering, Excel2Img finds the source workbook that
-is already open in Excel and sends `copy picture` directly to each range.
+For active-workbook rendering, Excel2Img finds the source workbook that is
+already open in Excel and sends `copy picture` directly to each range.
 Microsoft Excel for Mac supports this without activating the workbook or sheet
 and without selecting or navigating to the range. The active workbook, active
 sheet, selected cell, scroll position, and keyboard focus therefore remain
@@ -110,6 +143,8 @@ random temporary name is present; it cannot target a user workbook.
   divided table and are exported together. Corner-only contact stays separate.
 - Rendering uses the macOS pasteboard briefly, so it replaces current clipboard
   contents. Excel automation requires a logged-in graphical macOS session.
+- `--active` requires Excel to remain frontmost while the command starts. It
+  does not activate Excel if another application is frontmost.
 - Password prompts, external-link prompts, protected content, and extremely
   large ranges can prevent Excel from copying a picture. Macros are not run by
   Excel2Img; temporary copies are opened read-only with link updates disabled.
@@ -126,8 +161,9 @@ random temporary name is present; it cannot target a user workbook.
 pytest
 ```
 
-The automated suite verifies detection, exclusions, Unicode paths, stable
-output/cleanup, configuration, and watcher behavior without needing Excel. The
+The automated suite verifies active-workbook selection and save decisions,
+locking, detection, exclusions, Unicode paths, stable output/cleanup,
+configuration, and opt-in watcher behavior without needing Excel. The
 Excel automation integration can only be fully verified on a logged-in Mac that
 has granted Automation permission; failures are reported without stopping the
 watcher.
@@ -139,4 +175,10 @@ identical active workbook, active worksheet, selected cell, scroll row, and
 scroll column. Ten real tables were then rendered from the workbook being
 edited with the same state preserved. The frontmost application was Microsoft
 Word before and after a full `--check`, confirming that keyboard focus was not
-stolen. The private workbooks are not committed.
+stolen. The `--active` frontmost guard was also exercised with Code in front: it
+exited nonzero, did not render, and left Code frontmost. A live read of Excel's
+active workbook returned its exact saved path and state without bringing Excel
+forward, and the ordinary-save AppleScript compiled successfully without being
+executed. A successful `--active` render was not forced during that check because
+Excel was not frontmost; the command deliberately refused to change that state.
+The private workbooks are not committed.
