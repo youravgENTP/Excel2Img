@@ -40,7 +40,7 @@ def test_ignored_workbooks_and_unicode_names(tmp_path):
 
 def test_repeated_saves_replace_and_remove_stale_without_touching_manual_file(tmp_path, monkeypatch):
     source = tmp_path / "약물학.xlsx"
-    monkeypatch.setattr(exporter, "temporary_excel_workbook", fake_workbook)
+    monkeypatch.setattr(exporter, "render_workbook", fake_workbook)
     make_workbook(source, [(1, 1, 2, 2), (5, 1, 6, 2)])
     first = exporter.process_workbook(source, renderer=FakeRenderer(), log=lambda _: None)
     assert [path.name for path in first] == ["빠른 예습_01.png", "빠른 예습_02.png"]
@@ -57,7 +57,7 @@ def test_repeated_saves_replace_and_remove_stale_without_touching_manual_file(tm
 
 def test_modified_generated_file_is_not_deleted_as_stale(tmp_path, monkeypatch):
     source = tmp_path / "notes.xlsx"
-    monkeypatch.setattr(exporter, "temporary_excel_workbook", fake_workbook)
+    monkeypatch.setattr(exporter, "render_workbook", fake_workbook)
     make_workbook(source, [(1, 1, 2, 2)])
     generated = exporter.process_workbook(source, renderer=FakeRenderer(), log=lambda _: None)[0]
     generated.write_bytes(b"user replaced this image")
@@ -68,7 +68,7 @@ def test_modified_generated_file_is_not_deleted_as_stale(tmp_path, monkeypatch):
 
 def test_failed_render_removes_staging_file(tmp_path, monkeypatch):
     source = tmp_path / "failure.xlsx"
-    monkeypatch.setattr(exporter, "temporary_excel_workbook", fake_workbook)
+    monkeypatch.setattr(exporter, "render_workbook", fake_workbook)
     make_workbook(source, [(1, 1, 2, 2)])
     with pytest.raises(RuntimeError, match="copy failed"):
         exporter.process_workbook(source, renderer=FailingRenderer(), log=lambda _: None)

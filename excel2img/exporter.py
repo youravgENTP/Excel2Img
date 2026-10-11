@@ -14,7 +14,7 @@ from openpyxl import load_workbook
 
 from .detector import workbook_tables
 from .paths import is_eligible_workbook
-from .renderer import ExcelRenderer, temporary_excel_workbook
+from .renderer import ExcelRenderer, render_workbook
 
 MANIFEST = ".excel2img-manifest.json"
 _UNSAFE = re.compile(r"[/:\\\x00-\x1f]")
@@ -96,7 +96,7 @@ def process_workbook(
     staged: list[tuple[Path, str]] = []
     try:
         if jobs:
-            with temporary_excel_workbook(source, log=log) as workbook_name:
+            with render_workbook(source, log=log) as workbook_name:
                 for sheet_name, coordinate, filename in jobs:
                     fd, staging_name = tempfile.mkstemp(
                         prefix=".render-", suffix=".png", dir=output_dir

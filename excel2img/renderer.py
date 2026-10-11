@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,12 @@ class AutomationUnrecoverableError(RenderError):
 class ExcelSettings:
     automation_security: str
     display_alerts: bool
+
+
+@dataclass(frozen=True)
+class OpenWorkbook:
+    name: str
+    full_name: Path
 
 
 def _run_osascript(
@@ -101,6 +108,67 @@ end tell
     if security not in SECURITY_VALUES or alerts.lower() not in {"true", "false"}:
         raise RenderError(f"Excel returned unrecognized settings: {result!r}")
     return ExcelSettings(security, alerts.lower() == "true")
+
+
+def list_open_workbooks(timeout: float = RECOVERY_TIMEOUT) -> list[OpenWorkbook]:
+    result = _run_osascript(
+        '''
+set fieldSeparator to ASCII character 31
+set rowSeparator to ASCII character 30
+set outputText to ""
+tell application "Microsoft Excel"
+    repeat with workbookIndex from 1 to count of workbooks
+        set candidateWorkbook to workbook workbookIndex
+        set outputText to outputText & (name of candidateWorkbook as text) & fieldSeparator & (full name of candidateWorkbook as text) & rowSeparator
+    end repeat
+end tell
+return outputText
+''',
+        timeout=timeout,
+        phase="Listing open Excel workbooks",
+    )
+    workbooks: list[OpenWorkbook] = []
+    for row in result.split(chr(30)):
+        if not row:
+            continue
+        try:
+            name, full_name = row.split(chr(31), 1)
+        except ValueError as exc:
+            raise RenderError(f"Excel returned an unrecognized workbook entry: {row!r}") from exc
+        workbooks.append(OpenWorkbook(name, Path(full_name)))
+    return workbooks
+
+
+def _normalized_path(path: Path) -> str:
+    return unicodedata.normalize("NFC", str(path.expanduser().resolve()))
+
+
+def _find_open_workbook(source: Path, workbooks: list[OpenWorkbook]) -> OpenWorkbook | None:
+    wanted = _normalized_path(source)
+    return next(
+        (book for book in workbooks if _normalized_path(book.full_name) == wanted),
+        None,
+    )
+
+
+def _active_cell_target(timeout: float = RECOVERY_TIMEOUT) -> tuple[str, str, str]:
+    result = _run_osascript(
+        '''
+set fieldSeparator to ASCII character 31
+tell application "Microsoft Excel"
+    set workbookName to name of active workbook
+    set worksheetName to name of active sheet
+    set cellAddress to get address (active cell) row absolute false column absolute false
+    return workbookName & fieldSeparator & worksheetName & fieldSeparator & cellAddress
+end tell
+''',
+        timeout=timeout,
+        phase="Reading Excel's active cell",
+    )
+    parts = result.split(chr(31))
+    if len(parts) != 3:
+        raise RenderError(f"Excel returned an unrecognized active cell: {result!r}")
+    return parts[0], parts[1], parts[2]
 
 
 def _set_automation_security(value: str, timeout: float = RECOVERY_TIMEOUT) -> None:
@@ -162,6 +230,11 @@ def temporary_excel_workbook(
 ) -> Iterator[str]:
     if not EXCEL_APP.exists():
         raise RenderError(f"Microsoft Excel was not found at {EXCEL_APP}.")
+    if list_open_workbooks():
+        raise RenderError(
+            "Refusing to open a temporary workbook while another Excel workbook is open, "
+            "because that would change the user's active editing context."
+        )
 
     log("Creating temporary workbook copy...")
     try:
@@ -250,15 +323,35 @@ def temporary_excel_workbook(
                 log(f"Warning: could not close temporary workbook: {exc}")
 
 
+@contextmanager
+def render_workbook(
+    source: Path,
+    log: Callable[[str], None] = print,
+) -> Iterator[str]:
+    """Use an already-open source without activation, or an isolated temp copy."""
+    workbooks = list_open_workbooks()
+    opened_source = _find_open_workbook(source, workbooks)
+    if opened_source is not None:
+        log("Using the already-open workbook without activating it.")
+        yield opened_source.name
+        return
+    if workbooks:
+        raise RenderError(
+            f"{source.name} is not open in Excel. Rendering it now would disrupt the "
+            "currently active workbook, so Excel2Img left the Excel UI unchanged. "
+            "Open and save this workbook in Excel, or close all Excel workbooks before "
+            "using --file/--once."
+        )
+    with temporary_excel_workbook(source, log=log) as workbook_name:
+        yield workbook_name
+
+
 def _copy_range(workbook_name: str, sheet_name: str, coordinate: str) -> None:
     script = f'''
 tell application "Microsoft Excel"
     set targetWorkbook to workbook {_as_literal(workbook_name)}
     set targetWorksheet to worksheet {_as_literal(sheet_name)} of targetWorkbook
     set targetRange to range {_as_literal(coordinate)} of targetWorksheet
-    activate object targetWorkbook
-    activate object targetWorksheet
-    goto reference targetRange
     copy picture targetRange appearance printer format picture
 end tell
 '''
@@ -340,9 +433,22 @@ def automation_preflight(log: Callable[[str], None] = print) -> None:
     if not settings.display_alerts:
         log("Warning: Excel display alerts is already false; Excel2Img will not change it.")
 
+    open_workbooks = list_open_workbooks()
     with tempfile.TemporaryDirectory(prefix="excel2img-check-") as directory:
         source = Path(directory) / "preflight.xlsx"
         destination = Path(directory) / "preflight.png"
+        renderer = ExcelRenderer(log=log)
+        if open_workbooks:
+            workbook_name, sheet_name, coordinate = _active_cell_target()
+            log("Testing direct range copy without changing the active Excel context...")
+            renderer.render_open_workbook(
+                workbook_name, sheet_name, coordinate, destination
+            )
+            if not destination.is_file() or destination.stat().st_size == 0:
+                raise RenderError("Preflight did not produce a PNG image.")
+            log("Non-activating picture copy and PNG conversion: OK")
+            return
+
         workbook = Workbook()
         ws = workbook.active
         sheet_name = ws.title
@@ -351,7 +457,6 @@ def automation_preflight(log: Callable[[str], None] = print) -> None:
         ws["A1"].border = Border(top=thin, bottom=thin, left=thin, right=thin)
         workbook.save(source)
         workbook.close()
-        renderer = ExcelRenderer(log=log)
         with temporary_excel_workbook(source, log=log) as workbook_name:
             renderer.render_open_workbook(workbook_name, sheet_name, "A1:A1", destination)
         if not destination.is_file() or destination.stat().st_size == 0:

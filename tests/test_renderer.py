@@ -11,6 +11,7 @@ def prepare(monkeypatch, tmp_path):
     app.mkdir()
     monkeypatch.setattr(renderer, "EXCEL_APP", app)
     monkeypatch.setattr(renderer, "EXCEL_TEMP_ROOT", tmp_path / "excel-temp")
+    monkeypatch.setattr(renderer, "list_open_workbooks", lambda: [])
     source = tmp_path / "book.xlsm"
     source.write_bytes(b"workbook")
     return source
@@ -39,7 +40,7 @@ def test_open_script_declares_workbook_and_has_no_masking_error_handler(monkeypa
     assert "on error" not in captured["script"]
 
 
-def test_copy_picture_activates_workbook_sheet_and_range(monkeypatch):
+def test_copy_picture_does_not_activate_or_navigate(monkeypatch):
     captured = {}
 
     def run(script, **_kwargs):
@@ -49,9 +50,9 @@ def test_copy_picture_activates_workbook_sheet_and_range(monkeypatch):
     monkeypatch.setattr(renderer, "_run_osascript", run)
     monkeypatch.setattr(renderer.time, "sleep", lambda _seconds: None)
     renderer._copy_range("render.xlsx", "Sheet1", "B4:D8")
-    assert "activate object targetWorkbook" in captured["script"]
-    assert "activate object targetWorksheet" in captured["script"]
-    assert "goto reference targetRange" in captured["script"]
+    assert "copy picture targetRange" in captured["script"]
+    assert "activate object" not in captured["script"]
+    assert "goto reference" not in captured["script"]
 
 
 def test_open_failure_restores_observed_security_and_preserves_error(monkeypatch, tmp_path):
@@ -187,4 +188,89 @@ def test_cleanup_closes_only_random_temporary_workbook(monkeypatch, tmp_path):
         assert name != source.name
     assert closed == opened
     assert source.name not in closed
+
+
+def test_render_uses_matching_open_source_without_temp_or_close(monkeypatch, tmp_path):
+    source = tmp_path / "자료.xlsx"
+    source.write_bytes(b"workbook")
+    monkeypatch.setattr(
+        renderer,
+        "list_open_workbooks",
+        lambda: [renderer.OpenWorkbook("자료.xlsx", source)],
+    )
+    monkeypatch.setattr(
+        renderer,
+        "temporary_excel_workbook",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not open temp")),
+    )
+    with renderer.render_workbook(source, log=lambda _: None) as workbook_name:
+        assert workbook_name == "자료.xlsx"
+
+
+def test_render_refuses_closed_source_when_user_workbook_is_open(monkeypatch, tmp_path):
+    source = tmp_path / "closed.xlsx"
+    source.write_bytes(b"workbook")
+    user_book = tmp_path / "editing.xlsx"
+    monkeypatch.setattr(
+        renderer,
+        "list_open_workbooks",
+        lambda: [renderer.OpenWorkbook("editing.xlsx", user_book)],
+    )
+    with pytest.raises(renderer.RenderError, match="left the Excel UI unchanged"):
+        with renderer.render_workbook(source, log=lambda _: None):
+            pass
+
+
+def test_temporary_open_is_blocked_when_any_workbook_is_open(monkeypatch, tmp_path):
+    source = prepare(monkeypatch, tmp_path).with_suffix(".xlsx")
+    source.write_bytes(b"workbook")
+    monkeypatch.setattr(
+        renderer,
+        "list_open_workbooks",
+        lambda: [renderer.OpenWorkbook("user.xlsx", tmp_path / "user.xlsx")],
+    )
+    monkeypatch.setattr(
+        renderer,
+        "_open_workbook",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not open")),
+    )
+    with pytest.raises(renderer.RenderError, match="active editing context"):
+        with renderer.temporary_excel_workbook(source, log=lambda _: None):
+            pass
+
+
+def test_preflight_uses_active_cell_without_opening_temp(monkeypatch, tmp_path):
+    app = tmp_path / "Microsoft Excel.app"
+    app.mkdir()
+    monkeypatch.setattr(renderer, "EXCEL_APP", app)
+    monkeypatch.setattr(renderer, "check_excel_connection", lambda: "Microsoft Excel")
+    monkeypatch.setattr(
+        renderer,
+        "read_excel_settings",
+        lambda: renderer.ExcelSettings("msoAutomationSecurityLow", True),
+    )
+    monkeypatch.setattr(
+        renderer,
+        "list_open_workbooks",
+        lambda: [renderer.OpenWorkbook("editing.xlsx", tmp_path / "editing.xlsx")],
+    )
+    monkeypatch.setattr(renderer, "_active_cell_target", lambda: ("editing.xlsx", "Sheet2", "C8"))
+    monkeypatch.setattr(
+        renderer,
+        "temporary_excel_workbook",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not open temp")),
+    )
+    rendered = []
+
+    class FakeRenderer:
+        def __init__(self, log):
+            pass
+
+        def render_open_workbook(self, workbook_name, sheet_name, coordinate, destination):
+            rendered.append((workbook_name, sheet_name, coordinate))
+            destination.write_bytes(b"png")
+
+    monkeypatch.setattr(renderer, "ExcelRenderer", FakeRenderer)
+    renderer.automation_preflight(log=lambda _: None)
+    assert rendered == [("editing.xlsx", "Sheet2", "C8")]
 

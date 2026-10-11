@@ -29,9 +29,10 @@ open before Excel2Img starts.
 
 ## Run
 
-Check the complete Excel automation path first. This creates an isolated tiny
-workbook, opens and closes it, copies one cell as a picture, and verifies PNG
-conversion without modifying an existing document:
+Check the complete Excel automation path first. If a workbook is already open,
+this copies its active cell directly without activating or navigating anything.
+If Excel has no open workbook, the check creates and removes an isolated tiny
+workbook. Both paths verify PNG conversion without modifying a document:
 
 ```bash
 python main.py --check
@@ -74,20 +75,32 @@ cells. This preserves unbordered and blank cells inside an outlined table and
 keeps diagonally touching tables separate. A lone decorative line is not an
 enclosure and is ignored.
 
-For rendering, Excel2Img places a uniquely named copy inside Excel's private
-macOS sandbox temporary directory and opens it read-only. This avoids the
-macOS “Grant Access” dialog that blocks AppleScript for files in the system
-temporary directory. It activates the copied workbook, worksheet, and range,
-asks Excel for a printer-quality picture, reads the vector PDF flavor from the
-macOS pasteboard, and rasterizes it at 300 DPI. The source workbook is never
-edited or saved. Output files are atomically replaced.
+For normal save-triggered rendering, Excel2Img finds the source workbook that
+is already open in Excel and sends `copy picture` directly to each range.
+Microsoft Excel for Mac supports this without activating the workbook or sheet
+and without selecting or navigating to the range. The active workbook, active
+sheet, selected cell, scroll position, and keyboard focus therefore remain
+unchanged.
 
-`.xlsx` rendering does not change Excel application settings. For `.xlsm`, the
-renderer reads the current automation-security value, temporarily disables
-macros only while opening the copy, then restores that exact observed value in
-Python. It never changes `display alerts`. Timeout recovery closes a workbook
-only when its random temporary name is present; it cannot target a user
-workbook.
+When Excel has no workbook open (for example, a standalone `--once` run),
+Excel2Img places a uniquely named copy inside Excel's private macOS sandbox
+temporary directory and opens it read-only. This avoids the macOS “Grant
+Access” dialog that blocks AppleScript for files in the system temporary
+directory. It asks Excel for printer-quality pictures, reads the vector PDF
+flavor from the macOS pasteboard, and rasterizes it at 300 DPI. The source is
+never edited or saved. Output files are atomically replaced.
+
+If the requested source is closed while some other workbook is open,
+Excel2Img deliberately refuses to open a temporary copy because doing so would
+change the user's active Excel context. Open and save that source workbook, or
+close all Excel workbooks before running `--file`/`--once`.
+
+Rendering an already-open workbook does not change Excel application settings.
+For a closed `.xlsm` opened only when Excel is otherwise empty, the renderer
+reads the current automation-security value, temporarily disables macros while
+opening the copy, then restores that exact observed value in Python. It never
+changes `display alerts`. Timeout recovery closes a workbook only when its
+random temporary name is present; it cannot target a user workbook.
 
 ## Known limitations
 
@@ -103,6 +116,8 @@ workbook.
 - A modal dialog already open in Excel can block AppleScript. Excel2Img reports
   the failed phase and performs bounded recovery, but it does not dismiss user
   dialogs or terminate Excel automatically.
+- A closed source is not rendered while another workbook is open. This is an
+  intentional nonintrusion guarantee rather than a rendering limitation.
 - Rich text fidelity is determined by Excel's own Copy Picture output.
 
 ## Tests and verification
@@ -117,9 +132,11 @@ Excel automation integration can only be fully verified on a logged-in Mac that
 has granted Automation permission; failures are reported without stopping the
 watcher.
 
-Current implementation validation (2026-10-11): `--check` passed on the
-installed Microsoft Excel for Mac. The real `7. Anti-seizure.xlsx` that had
-timed out was then processed through `--file`: seven tables across three sheets
-were rendered successfully. The source remained untouched, the randomly named
-temporary workbook was closed, and no temporary job directory remained. The
-private workbook itself is not committed.
+Current implementation validation (2026-10-11): direct `copy picture` from a
+non-active worksheet and from a workbook other than the active workbook both
+succeeded in the installed Microsoft Excel for Mac. Before/after checks showed
+identical active workbook, active worksheet, selected cell, scroll row, and
+scroll column. Ten real tables were then rendered from the workbook being
+edited with the same state preserved. The frontmost application was Microsoft
+Word before and after a full `--check`, confirming that keyboard focus was not
+stolen. The private workbooks are not committed.
