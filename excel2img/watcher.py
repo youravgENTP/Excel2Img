@@ -45,12 +45,15 @@ class DebouncedProcessor:
         process: Callable[[Path], object],
         log: Callable[[str], None] = print,
         debounce_seconds: float = 0.8,
+        fatal_exceptions: tuple[type[BaseException], ...] = (),
     ):
         self.process = process
         self.log = log
         self.debounce_seconds = debounce_seconds
+        self.fatal_exceptions = fatal_exceptions
         self._lock = threading.Lock()
         self._states: dict[Path, dict[str, object]] = {}
+        self._fatal_error: BaseException | None = None
         # Excel and the macOS pasteboard are process-global resources, so render
         # workbooks serially. Events still queue and coalesce independently.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="excel2img")
@@ -60,6 +63,8 @@ class DebouncedProcessor:
         if not is_eligible_workbook(path):
             return
         with self._lock:
+            if self._fatal_error is not None:
+                return
             state = self._states.setdefault(path, {"generation": 0, "running": False, "timer": None})
             state["generation"] = int(state["generation"]) + 1
             generation = int(state["generation"])
@@ -74,7 +79,7 @@ class DebouncedProcessor:
     def _ready(self, path: Path, generation: int) -> None:
         with self._lock:
             state = self._states.get(path)
-            if not state or generation != state["generation"]:
+            if self._fatal_error is not None or not state or generation != state["generation"]:
                 return
             state["timer"] = None
             if state["running"]:
@@ -87,6 +92,13 @@ class DebouncedProcessor:
             if not wait_until_stable(path):
                 raise RuntimeError("file did not become stable and readable")
             self.process(path)
+        except self.fatal_exceptions as exc:
+            with self._lock:
+                self._fatal_error = exc
+            self.log(
+                f"Excel automation paused after an unrecoverable failure: {exc}. "
+                "Restart after running: python main.py --check"
+            )
         except Exception as exc:
             self.log(f"Failed: {path.name}: {exc}")
         finally:
@@ -95,6 +107,8 @@ class DebouncedProcessor:
                 if not state:
                     return
                 state["running"] = False
+                if self._fatal_error is not None:
+                    return
                 latest = int(state["generation"])
                 if latest > generation:
                     timer = threading.Timer(0, self._ready, args=(path, latest))
@@ -126,8 +140,13 @@ class ExcelEventHandler(FileSystemEventHandler):
             self.processor.submit(path)
 
 
-def watch(directories: list[Path], process: Callable[[Path], object], log=print) -> None:
-    processor = DebouncedProcessor(process, log)
+def watch(
+    directories: list[Path],
+    process: Callable[[Path], object],
+    log=print,
+    fatal_exceptions: tuple[type[BaseException], ...] = (),
+) -> None:
+    processor = DebouncedProcessor(process, log, fatal_exceptions=fatal_exceptions)
     observer = Observer()
     handler = ExcelEventHandler(processor, log)
     for directory in directories:

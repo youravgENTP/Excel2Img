@@ -92,19 +92,19 @@ def process_workbook(
         filename = f"{sanitize_filename(sheet_name)}_{counts[sheet_name]:02d}.png"
         jobs.append((sheet_name, table.coordinate, filename))
 
-    renderer = renderer or ExcelRenderer()
+    renderer = renderer or ExcelRenderer(log=log)
     staged: list[tuple[Path, str]] = []
     try:
         if jobs:
-            with temporary_excel_workbook(source) as workbook_name:
+            with temporary_excel_workbook(source, log=log) as workbook_name:
                 for sheet_name, coordinate, filename in jobs:
                     fd, staging_name = tempfile.mkstemp(
                         prefix=".render-", suffix=".png", dir=output_dir
                     )
                     os.close(fd)
                     staging = Path(staging_name)
-                    renderer.render_open_workbook(workbook_name, sheet_name, coordinate, staging)
                     staged.append((staging, filename))
+                    renderer.render_open_workbook(workbook_name, sheet_name, coordinate, staging)
         for staging, filename in staged:
             os.replace(staging, output_dir / filename)
             log(f"Exported: {filename}")

@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 
+import pytest
 from openpyxl import Workbook
 
 from excel2img import exporter
@@ -12,8 +13,13 @@ class FakeRenderer:
         destination.write_bytes(f"{sheet_name}:{coordinate}".encode())
 
 
+class FailingRenderer:
+    def render_open_workbook(self, workbook_name, sheet_name, coordinate, destination):
+        raise RuntimeError("copy failed")
+
+
 @contextmanager
-def fake_workbook(_source):
+def fake_workbook(_source, **_kwargs):
     yield "temporary.xlsx"
 
 
@@ -58,4 +64,14 @@ def test_modified_generated_file_is_not_deleted_as_stale(tmp_path, monkeypatch):
     make_workbook(source, [])
     exporter.process_workbook(source, renderer=FakeRenderer(), log=lambda _: None)
     assert generated.read_bytes() == b"user replaced this image"
+
+
+def test_failed_render_removes_staging_file(tmp_path, monkeypatch):
+    source = tmp_path / "failure.xlsx"
+    monkeypatch.setattr(exporter, "temporary_excel_workbook", fake_workbook)
+    make_workbook(source, [(1, 1, 2, 2)])
+    with pytest.raises(RuntimeError, match="copy failed"):
+        exporter.process_workbook(source, renderer=FailingRenderer(), log=lambda _: None)
+    output = tmp_path / "failure_Img"
+    assert list(output.glob(".render-*.png")) == []
 

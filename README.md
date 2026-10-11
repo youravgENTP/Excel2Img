@@ -29,6 +29,20 @@ open before Excel2Img starts.
 
 ## Run
 
+Check the complete Excel automation path first. This creates an isolated tiny
+workbook, opens and closes it, copies one cell as a picture, and verifies PNG
+conversion without modifying an existing document:
+
+```bash
+python main.py --check
+```
+
+Diagnose or render one workbook without reading the directory configuration:
+
+```bash
+python main.py --file "/absolute/path/to/workbook.xlsx"
+```
+
 Process all existing eligible workbooks once:
 
 ```bash
@@ -40,6 +54,11 @@ Then watch continuously (stop with Ctrl+C):
 ```bash
 python main.py
 ```
+
+Batch and watcher startup run the same preflight automatically. If Excel stops
+responding, a batch aborts instead of sending every remaining workbook to a
+broken automation session. Resolve any visible Excel dialog and run `--check`
+again; Excel2Img never force-quits Excel or closes the user's workbooks.
 
 For `Notes.xlsx`, images are written beside it in `Notes_Img/`, for example
 `Sheet1_01.png`. Files and worksheets whose names begin with `!`, Excel lock
@@ -55,10 +74,20 @@ cells. This preserves unbordered and blank cells inside an outlined table and
 keeps diagonally touching tables separate. A lone decorative line is not an
 enclosure and is ignored.
 
-For rendering, Excel2Img opens a temporary copy read-only, asks Excel to copy
-each detected range as a printer-quality picture, reads the vector PDF flavor
-from the macOS pasteboard, and rasterizes it at 300 DPI. The source workbook is
-never edited or saved. Output files are atomically replaced.
+For rendering, Excel2Img places a uniquely named copy inside Excel's private
+macOS sandbox temporary directory and opens it read-only. This avoids the
+macOS “Grant Access” dialog that blocks AppleScript for files in the system
+temporary directory. It activates the copied workbook, worksheet, and range,
+asks Excel for a printer-quality picture, reads the vector PDF flavor from the
+macOS pasteboard, and rasterizes it at 300 DPI. The source workbook is never
+edited or saved. Output files are atomically replaced.
+
+`.xlsx` rendering does not change Excel application settings. For `.xlsm`, the
+renderer reads the current automation-security value, temporarily disables
+macros only while opening the copy, then restores that exact observed value in
+Python. It never changes `display alerts`. Timeout recovery closes a workbook
+only when its random temporary name is present; it cannot target a user
+workbook.
 
 ## Known limitations
 
@@ -71,6 +100,9 @@ never edited or saved. Output files are atomically replaced.
 - Password prompts, external-link prompts, protected content, and extremely
   large ranges can prevent Excel from copying a picture. Macros are not run by
   Excel2Img; temporary copies are opened read-only with link updates disabled.
+- A modal dialog already open in Excel can block AppleScript. Excel2Img reports
+  the failed phase and performs bounded recovery, but it does not dismiss user
+  dialogs or terminate Excel automatically.
 - Rich text fidelity is determined by Excel's own Copy Picture output.
 
 ## Tests and verification
@@ -85,10 +117,9 @@ Excel automation integration can only be fully verified on a logged-in Mac that
 has granted Automation permission; failures are reported without stopping the
 watcher.
 
-Current implementation validation (2026-10-11): the full Excel pipeline was
-run successfully on the installed Microsoft Excel for Mac using a synthetic
-workbook with Korean text, a merged cell, font/fill formatting, and Greek and
-superscript characters. It also succeeded while the source workbook remained
-open, and Excel's automation-security setting was restored afterward. The
-private study workbook named in the original requirements was not present and
-was therefore not tested or committed.
+Current implementation validation (2026-10-11): `--check` passed on the
+installed Microsoft Excel for Mac. The real `7. Anti-seizure.xlsx` that had
+timed out was then processed through `--file`: seven tables across three sheets
+were rendered successfully. The source remained untouched, the randomly named
+temporary workbook was closed, and no temporary job directory remained. The
+private workbook itself is not committed.
